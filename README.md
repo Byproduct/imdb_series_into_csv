@@ -1,8 +1,11 @@
 # IMDB series into .csv
 
 This is a script to fetch TV series data from IMDB while Cinemagoer is out of order at the moment (September 2024).
+
 You input the name of TV series and this script fetches details into two .csv files:
+
 series.csv: episode code / rating / episode name / date / plot summary
+
 series_ratings: imdb ratings in one .csv line per season
 
 The .csv files work nicely with conditional formatting in excel

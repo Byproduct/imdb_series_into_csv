@@ -1,161 +1,139 @@
-# This is a script to fetch TV series data from IMDB while Cinemagoer is out of order at the moment (September 2024).
-# You input the name of TV series and this script fetches details into two .csv files:
-# series.csv: episode code / rating / episode name / date / plot summary
-# series_ratings: imdb ratings in one .csv line per season
-
-# The .csv files work nicely with conditional formatting in excel
-
-# Fetching code is based on help provided by oaokm at https://github.com/cinemagoer/cinemagoer/issues/517
-
-
 import csv
-from datetime import datetime
-from requests_html import HTMLSession
-from time import process_time
-import imdb
-import json
-from tqdm import tqdm
-from imdb import Cinemagoer
+import re
+import os
+import sys
 
-print("\n\nFetching TV series info from IMDB into .csv")
-tv_series_name = input('Enter name of series: ')
+# The version of cinemagoer on PyPI may not work - install the newest version directly from github, e.g. pip install git+https://github.com/cinemagoer/cinemagoerng.git
+from cinemagoerng import web
+
+def main():
+    os.system('cls' if os.name == 'nt' else 'clear')
+    print("Creating .csv files of a TV series in IMDB.\n")
+    print("Enter the IMDb code or url of the first episode (e.g. tt0106336 or https://www.imdb.com/title/tt0106336/whatever)\n")
+    print("Note: This needs to be the url/code of the first episode, not the series main page!\n")
+    user_input = input().strip()
 
 
-class IMDbFetcher:
-    def __init__(self, search_box: str, num=0, first=True):
-        self.imdb_client = imdb.Cinemagoer(accessSystem='http')
-        self.search_box = search_box
-        self.session = HTMLSession()
-        with open("data.json") as f:
-            config = json.load(f)
-        self.xpath = config.get("Xpath").get('episodeDataFormIMDB')
-        self.selector = config.get("Selector").get('episodeDataFormIMDB')
-
-        if self.search_box.startswith('t'):
-            self.search_box = self.search_box.lstrip('t')
-
-        if not self.search_box.isdigit() and num != -1:
-            results = self.imdb_client.search_movie(self.search_box)
-            if not results:
-                raise ValueError(f"No results found for {self.search_box} on IMDb.")
-            self.search_result = results[0 if first else num]
-        elif num == -1:
-            results = self.imdb_client.search_movie(self.search_box)
-            if not results:
-                raise ValueError(f"No results found for {self.search_box} on IMDb.")
-            print("\n\n[Search Result]")
-            for index, movie in enumerate(results):
-                print(f"[{index}] {movie.get('title')}")
-            selected = int(input("\n> "))
-            self.search_result = results[selected]
+    # Check if the user gave an IMDB code
+    if re.match(r'^tt\d+$', user_input):
+        first_episode_id = user_input
+    else:
+        # If not, attempt to extract the code from a URL
+        pattern = r'/tt\d+/'
+        match = re.search(pattern, user_input)
+        if match:
+            first_episode_id = match.group(0).strip('/')
+       
+            # Validate the extracted ID
+            if not re.match(r'^tt\d+$', first_episode_id):
+                print("Error: Invalid IMDb code format.")
+                sys.exit(1)
         else:
-            self.search_result = self.imdb_client.get_movie(self.search_box)
+            print("Error: invalid IMDB code.")
+            sys.exit(1)
 
-        self.imdb_client.update(self.search_result)
 
-    def get_TV_series_information(self, seasons=[]):
-        kind = self.search_result.get('kind', None)
-        num_of_seasons = self.search_result.get("number of seasons", None)
-        movie_id = self.search_result.movieID
-        season_page_url = self.imdb_client.urls['movie_main'] % f"{movie_id}"
+    print("\n\n")
+    current_id = first_episode_id
 
-        if seasons and kind in ('tv series', 'tv mini series'):
-            if seasons != "*":
-                seasons.sort()
+    if os.path.exists("series.csv"):
+        os.remove("series.csv")
+    if os.path.exists("ratings.csv"):
+        os.remove("ratings.csv")
+
+    # series.csv with header: episode_code,rating,title,date,plot
+    with open("series.csv", "w", newline="", encoding="utf-8") as series_file:
+        series_writer = csv.writer(series_file)
+        series_writer.writerow(["episode_code","rating","title","date","plot"])  # header
+
+    # ratings.csv will have one line per season:
+    # The first field is the season number, followed by all the ratings of that season's episodes
+    with open("ratings.csv", "w", newline="", encoding="utf-8") as ratings_file:
+        ratings_writer = csv.writer(ratings_file)
+
+    current_season = None
+    season_ratings = []  # Will store float values of the ratings of one season
+
+    first_iteration = True
+    while current_id:
+        episode = web.get_title(current_id)
+
+        try:
+            season = episode.season if episode.season else "?"
+        except:
+            errormsg = """
+            Error fetching data.
+            Possible reasons:
+            
+            1. This script b0rked
+            2. Imdb/cimenagoerng has changed something
+            3. Invalid IMDB code
+            4. Entered code of the series. Should enter the code of the first episode instead.
+            """
+            print(errormsg)
+            sys.exit(1)
+
+        episode_num = episode.episode if episode.episode else "?"
+        episode_code = f"S{season}E{episode_num}"
+        title = episode.title if episode.title else "?"
+        date = episode.release_date.strftime("%Y-%m-%d") if episode.release_date else "?"
+        rating_str = f"{episode.rating:.1f}" if episode.rating else "?"
+        plot = "No plot available"
+        if episode.plot:
+            # Try 'en-US', fallback to first available language if needed
+            if 'en-US' in episode.plot:
+                plot = episode.plot['en-US']
             else:
-                seasons = range(1, num_of_seasons + 1)
+                # If 'en-US' not available, pick the first value
+                first_plot_key = next(iter(episode.plot))
+                plot = episode.plot[first_plot_key]
 
-            all_episodes = []
-            season_ratings = []
+        # Write this episode's information to series.csv immediately
+        with open("series.csv", "a", newline="", encoding="utf-8") as series_file:
+            series_writer = csv.writer(series_file)
+            series_writer.writerow([episode_code, rating_str, title, date, plot])
 
-            for season in seasons:
-                try:
-                    season_page = self.session.get(f"{season_page_url}episodes?season={season}")
-                    episode_count = season_page.html.xpath(self.xpath.get("countOfEpisode"))
-                except Exception as e:
-                    print(f"Error fetching season {season}: {e}")
-                    continue
+        # Handle ratings accumulation per season
+        # If moved to a new season, and old season data exists, flush it to ratings.csv
+        if current_season is not None and season != current_season:
+            _write_season_ratings(current_season, season_ratings)
+            season_ratings = []  # Reset for new season
 
-                season_ratings_list = []
+        current_season = season
 
-                if season_page.status_code == 200:
-                    for index, episode in enumerate(tqdm(episode_count, desc=f"[Season: {season} of {num_of_seasons}]")):
-                        try:
-                            episode_element = episode.find(self.selector.get("title"), first=True)
-                            if not episode_element:
-                                print(f"Error: Title not found for episode {index + 1} of season {season}.")
-                                continue
-    
-                            episode_url = episode_element.attrs.get("href", "N/A")
-                            episode_title = episode_element.text.split("∙")[-1].strip() if episode_element.text else "N/A"
-
-                            episode_plot_element = episode.find(self.selector.get("plot"), first=True)
-                            episode_plot = episode_plot_element.text if episode_plot_element else "Plot not available"
-
-                            episode_rating_element = episode.find(self.selector.get("rate"), first=True)
-                            episode_rating = episode_rating_element.text if episode_rating_element else "Rating not available"
-
-                            release_date_element = episode.find(self.selector.get("dateOfPost"), first=True)
-                            release_date_text = release_date_element.text if release_date_element else "Date not available"
-                            try:
-                                release_date = datetime.strptime(release_date_text, "%a, %b %d, %Y").strftime("%Y-%m-%d")
-                            except ValueError:
-                                release_date = release_date_text
-
-                            all_episodes.append({
-                                'episode_code': f"S{season}.E{index + 1}",
-                                'rating': episode_rating,
-                                'name': episode_title,
-                                'release_date': release_date,
-                                'plot': episode_plot
-                            })
-                            season_ratings_list.append(episode_rating)
-
-                        except AttributeError as e:
-                            print(f"Error processing episode {index + 1} of season {season}: {e}")
-                            continue
-                        except Exception as e:
-                            print(f"Unexpected error processing episode {index + 1} of season {season}: {e}")
-                            continue
-
-                season_ratings.append(season_ratings_list)
-
-            # Episode details to {tv_series_name}.csv
+        # Add rating to current season's list if it's numeric
+        if rating_str != "?":
             try:
-                with open(f'{tv_series_name}.csv', mode='w', newline='', encoding='utf-8') as file:
-                    writer = csv.DictWriter(file, fieldnames=['episode_code', 'rating', 'name', 'release_date', 'plot'])
-                    writer.writeheader()
-                    writer.writerows(all_episodes)
-            except Exception as e:
-                print(f"Error writing episodes to CSV: {e}")
+                rating_float = float(rating_str)
+                season_ratings.append(rating_float)
+            except ValueError:
+                # If rating is not numeric, ignore
+                pass
 
-            # Episode ratings to {tv_series_name}_ratings.csv
-            try:
-                with open(f'{tv_series_name}_ratings.csv', mode='w', newline='', encoding='utf-8') as file:
-                    writer = csv.writer(file)
-                    for season_rating in season_ratings:
-                        writer.writerow(season_rating)
-            except Exception as e:
-                print(f"Error writing ratings to CSV: {e}")
+        current_id = getattr(episode, 'next_episode', None)       
+        if first_iteration:
+            previous_episode = getattr(episode, 'previous_episode', None)       
+            if previous_episode:
+                print("Previous episode information found - this is probably not the first episode.")
+                print("If you're intentionally getting partial data, press enter to proceed.")
+                print("Otherwise cancel (e.g. CTRL+C) and enter the url/code of the first episode in the series.")
+                input()
 
-        else:
-            print(f"No seasons available or invalid kind: {kind}")
-        return []
+        print(f"{episode_code}  -  {rating_str}  -  {title}  -  {date}  -  {plot}\n")
+        first_iteration = False
+
+    # After the loop ends, flush the last season's data
+    if current_season is not None and season_ratings:
+        _write_season_ratings(current_season, season_ratings)
 
 
-print("Downloading data...")
+def _write_season_ratings(season, ratings):
+    """Append one line to ratings.csv with the season and its collected ratings."""
+    with open("ratings.csv", "a", newline="", encoding="utf-8") as ratings_file:
+        ratings_writer = csv.writer(ratings_file)
+        # Build row: first the season number, then each rating
+        row = [f"Season {season}"] + [str(r) for r in ratings]
+        ratings_writer.writerow(row)
 
-try:
-    movie = IMDbFetcher(
-        search_box=f"{tv_series_name}",
-        num=0
-    )
-    movie.get_TV_series_information(seasons='*')
-    print(f"Episode details written to {tv_series_name}.csv")
-    print(f"Episode ratings written to {tv_series_name}_ratings.csv")
-
-except KeyboardInterrupt:
-    print('Exit')
-    exit()
-except Exception as e:
-    print(f"An unexpected error occurred: {e}")
+if __name__ == "__main__":
+    main()

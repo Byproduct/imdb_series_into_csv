@@ -15,6 +15,7 @@ from time import process_time
 import imdb
 import json
 from tqdm import tqdm
+from imdb import Cinemagoer
 
 print("\n\nFetching TV series info from IMDB into .csv")
 tv_series_name = input('Enter name of series: ')
@@ -35,9 +36,13 @@ class IMDbFetcher:
 
         if not self.search_box.isdigit() and num != -1:
             results = self.imdb_client.search_movie(self.search_box)
+            if not results:
+                raise ValueError(f"No results found for {self.search_box} on IMDb.")
             self.search_result = results[0 if first else num]
         elif num == -1:
             results = self.imdb_client.search_movie(self.search_box)
+            if not results:
+                raise ValueError(f"No results found for {self.search_box} on IMDb.")
             print("\n\n[Search Result]")
             for index, movie in enumerate(results):
                 print(f"[{index}] {movie.get('title')}")
@@ -64,21 +69,34 @@ class IMDbFetcher:
             season_ratings = []
 
             for season in seasons:
-                season_page = self.session.get(f"{season_page_url}episodes?season={season}")
-                episode_count = season_page.html.xpath(self.xpath.get("countOfEpisode"))
+                try:
+                    season_page = self.session.get(f"{season_page_url}episodes?season={season}")
+                    episode_count = season_page.html.xpath(self.xpath.get("countOfEpisode"))
+                except Exception as e:
+                    print(f"Error fetching season {season}: {e}")
+                    continue
 
                 season_ratings_list = []
 
                 if season_page.status_code == 200:
                     for index, episode in enumerate(tqdm(episode_count, desc=f"[Season: {season} of {num_of_seasons}]")):
                         try:
-                            episode_url = episode.find(self.selector.get("title"), first=True).attrs.get("href")
-                            episode_title = episode.find(self.selector.get('title'), first=True).text.split("∙")[-1].strip()
-                            episode_plot = episode.find(self.selector.get("plot"), first=True).text
-                            episode_rating = episode.find(self.selector.get("rate"), first=True).text
-                            episode_id = episode_url.split('/')[2][2:]
+                            episode_element = episode.find(self.selector.get("title"), first=True)
+                            if not episode_element:
+                                print(f"Error: Title not found for episode {index + 1} of season {season}.")
+                                continue
+    
+                            episode_url = episode_element.attrs.get("href", "N/A")
+                            episode_title = episode_element.text.split("∙")[-1].strip() if episode_element.text else "N/A"
 
-                            release_date_text = episode.find(self.selector.get("dateOfPost"), first=True).text
+                            episode_plot_element = episode.find(self.selector.get("plot"), first=True)
+                            episode_plot = episode_plot_element.text if episode_plot_element else "Plot not available"
+
+                            episode_rating_element = episode.find(self.selector.get("rate"), first=True)
+                            episode_rating = episode_rating_element.text if episode_rating_element else "Rating not available"
+
+                            release_date_element = episode.find(self.selector.get("dateOfPost"), first=True)
+                            release_date_text = release_date_element.text if release_date_element else "Date not available"
                             try:
                                 release_date = datetime.strptime(release_date_text, "%a, %b %d, %Y").strftime("%Y-%m-%d")
                             except ValueError:
@@ -91,26 +109,37 @@ class IMDbFetcher:
                                 'release_date': release_date,
                                 'plot': episode_plot
                             })
-
                             season_ratings_list.append(episode_rating)
 
-                        except AttributeError:
+                        except AttributeError as e:
+                            print(f"Error processing episode {index + 1} of season {season}: {e}")
                             continue
-                
+                        except Exception as e:
+                            print(f"Unexpected error processing episode {index + 1} of season {season}: {e}")
+                            continue
+
                 season_ratings.append(season_ratings_list)
 
             # Episode details to {tv_series_name}.csv
-            with open(f'{tv_series_name}.csv', mode='w', newline='', encoding='utf-8') as file:
-                writer = csv.DictWriter(file, fieldnames=['episode_code', 'rating', 'name', 'release_date', 'plot'])
-                writer.writeheader()
-                writer.writerows(all_episodes)
+            try:
+                with open(f'{tv_series_name}.csv', mode='w', newline='', encoding='utf-8') as file:
+                    writer = csv.DictWriter(file, fieldnames=['episode_code', 'rating', 'name', 'release_date', 'plot'])
+                    writer.writeheader()
+                    writer.writerows(all_episodes)
+            except Exception as e:
+                print(f"Error writing episodes to CSV: {e}")
 
             # Episode ratings to {tv_series_name}_ratings.csv
-            with open(f'{tv_series_name}_ratings.csv', mode='w', newline='', encoding='utf-8') as file:
-                writer = csv.writer(file)
-                for season_rating in season_ratings:
-                    writer.writerow(season_rating)
+            try:
+                with open(f'{tv_series_name}_ratings.csv', mode='w', newline='', encoding='utf-8') as file:
+                    writer = csv.writer(file)
+                    for season_rating in season_ratings:
+                        writer.writerow(season_rating)
+            except Exception as e:
+                print(f"Error writing ratings to CSV: {e}")
 
+        else:
+            print(f"No seasons available or invalid kind: {kind}")
         return []
 
 
@@ -128,3 +157,5 @@ try:
 except KeyboardInterrupt:
     print('Exit')
     exit()
+except Exception as e:
+    print(f"An unexpected error occurred: {e}")
